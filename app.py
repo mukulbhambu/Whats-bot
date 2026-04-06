@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 import os
 
-import google.generativeai as genai
+from google import genai
 from google.api_core import exceptions
 
 from huggingface_hub import InferenceClient
