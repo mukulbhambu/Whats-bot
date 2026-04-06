@@ -1,6 +1,6 @@
 flask
 requests
-google-generativeai
+google-genai
 huggingface_hub
 Pillow
 gunicorn
