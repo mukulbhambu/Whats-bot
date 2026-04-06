@@ -1,0 +1,6 @@
+flask
+requests
+google-generativeai
+huggingface_hub
+Pillow
+gunicorn
