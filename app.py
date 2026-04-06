@@ -36,7 +36,7 @@ MAX_HISTORY = 10
 
 # ================== UTIL ==================
 def typing_delay():
-    time.sleep(1.2)
+    time.sleep(0.5)
 
 
 def send_whatsapp_message(to, text):
@@ -175,7 +175,7 @@ def generate_image(prompt):
     for attempt in range(3):  # retry logic
         try:
             image = hf_client.text_to_image(
-                prompt,
+                final_prompt,
                 model="stabilityai/stable-diffusion-xl-base-1.0"
             )
 
