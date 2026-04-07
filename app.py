@@ -124,10 +124,12 @@ def analyze_image(file_path, prompt="Describe this image"):
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite-preview",
             contents=[
-                {"text": prompt},
-                {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}}
-            ]
-        )
+                {"role": "user", "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}}
+                    ]}
+                ]
+            )
         return response.text
 
     except Exception as e:
@@ -203,12 +205,20 @@ Conversation:
 
     try:
         response = client.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
-            contents=prompt
-        )
+    model="gemini-3.1-flash-lite-preview",
+    contents=[{"text": prompt}]
+)
+        
+# safer extraction
+        reply = ""
 
-        reply = response.text
-        user_memory[sender].append({"role": "ai", "content": reply})
+        if hasattr(response, "text") and response.text:
+            reply = response.text
+        elif hasattr(response, "candidates"):
+            reply = response.candidates[0].content.parts[0].text
+        else:
+            reply = "⚠️ No response from AI"
+            user_memory[sender].append({"role": "ai", "content": reply})
         return reply
 
     except Exception as e:
