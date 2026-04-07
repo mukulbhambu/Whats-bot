@@ -145,6 +145,14 @@ STYLE_PROMPTS = {
     "sketch": "pencil sketch, black and white, detailed drawing",
     "fantasy": "fantasy art, magical, epic scene, detailed",
 }
+PROMPT_SUGGESTIONS = [
+    "a dragon flying over mountains",
+    "a futuristic city at night",
+    "a cute cat astronaut",
+    "a warrior in battlefield",
+    "a girl standing on beach at sunset",
+    "a cyberpunk hacker with neon lights"
+]
 
 def generate_image(prompt):
     style_text = ""
@@ -205,25 +213,59 @@ Conversation:
 
     try:
         response = client.models.generate_content(
-    model="gemini-3.1-flash-lite-preview",
-    contents=[{"text": prompt}]
-)
-        
-# safer extraction
-        reply = ""
+            model="gemini-3.1-flash-lite-preview",
+            contents=[{"text": prompt}]
+        )
 
+        # ✅ safer extraction
         if hasattr(response, "text") and response.text:
             reply = response.text
         elif hasattr(response, "candidates"):
             reply = response.candidates[0].content.parts[0].text
         else:
             reply = "⚠️ No response from AI"
-            user_memory[sender].append({"role": "ai", "content": reply})
+
+        # ✅ ALWAYS save AI reply
+        user_memory[sender].append({"role": "ai", "content": reply})
+
         return reply
 
     except Exception as e:
         print("AI Error:", e)
         return "⚠️ AI error."
+#===================prompt enhancer================
+
+def enhance_prompt(user_prompt, style=""):
+    try:
+        enhance_text = f"""
+Enhance this image prompt to make it detailed and visually rich.
+
+Prompt: {user_prompt}
+
+Rules:
+- Make it creative and detailed
+- Add lighting, quality, environment
+- Keep it short (1 sentence)
+- Style hint: {style}
+
+Return only the enhanced prompt.
+"""
+
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite-preview",
+            contents=[{"text": enhance_text}]
+        )
+
+        if hasattr(response, "text") and response.text:
+            return response.text.strip()
+        elif hasattr(response, "candidates"):
+            return response.candidates[0].content.parts[0].text.strip()
+
+        return user_prompt
+
+    except Exception as e:
+        print("Enhancer Error:", e)
+        return user_prompt
 
 # ================== VERIFY ==================
 @app.route("/webhook", methods=["GET"])
@@ -276,6 +318,7 @@ def webhook():
             # 🎨 STYLE MENU
             elif text == "image":
                 user_style[sender] = None
+                suggestions_text = "\n".join([f"• {p}" for p in PROMPT_SUGGESTIONS[:4]])
                 send_whatsapp_message(sender,
                     "🎨 Choose a style:\n\n"
                     "1️⃣ Anime\n"
@@ -299,14 +342,24 @@ def webhook():
                 }
 
                 user_style[sender] = styles[text]
+                suggestions_text = "\n".join([f"• {p}" for p in PROMPT_SUGGESTIONS])
                 send_whatsapp_message(sender, f"✅ Style selected: {styles[text]}\nNow send your prompt")
                 return "OK", 200
 
             elif sender in user_style and user_style[sender]:
                 typing_delay()
                 send_whatsapp_message(sender, "🎨 Creating your image...")
+                style_text = STYLE_PROMPTS[user_style[sender]]
+                
+                # 🔥 enhance prompt using Gemini
+                enhanced = enhance_prompt(text, style_text)
+# combine enhanced + style
+                styled_prompt = f"{enhanced}, {style_text}"
+                print("Enhanced Prompt:", styled_prompt)
 
-                styled_prompt = f"{text}, {STYLE_PROMPTS[user_style[sender]]}"
+# (optional but recommended)
+                send_whatsapp_message(sender, f"✨ Enhanced Prompt:\n{enhanced}")
+
                 img_path = generate_image(styled_prompt)
 
                 if img_path:
