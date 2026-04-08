@@ -21,11 +21,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ================== DB POOL (PRO LEVEL) ==================
-db_pool = SimpleConnectionPool(
-    1, 10,  # min, max connections
-    dsn=DATABASE_URL
-)
+# ================== DB POOL ==================
+db_pool = SimpleConnectionPool(1, 10, dsn=DATABASE_URL)
 
 def get_conn():
     return db_pool.getconn()
@@ -33,10 +30,12 @@ def get_conn():
 def release_conn(conn):
     db_pool.putconn(conn)
 
+# ================== INIT DB ==================
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
+    # Chat memory
     cur.execute("""
     CREATE TABLE IF NOT EXISTS chat_memory (
         id SERIAL PRIMARY KEY,
@@ -44,6 +43,18 @@ def init_db():
         role TEXT,
         message TEXT,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    # Task queue
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS tasks (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT,
+        task_type TEXT,
+        prompt TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
 
@@ -92,6 +103,23 @@ def get_memory(user):
         print("DB Read Error:", e)
         return []
 
+def add_task(user, task_type, prompt):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute(
+            "INSERT INTO tasks (user_id, task_type, prompt) VALUES (%s, %s, %s)",
+            (user, task_type, prompt)
+        )
+
+        conn.commit()
+        cur.close()
+        release_conn(conn)
+
+    except Exception as e:
+        print("Task Error:", e)
+
 # ================== MEMORY ==================
 user_style = {}
 
@@ -115,75 +143,34 @@ def send_whatsapp_message(to, text):
     except Exception as e:
         print("Send message error:", e)
 
-def send_whatsapp_image(to, image_path):
-    try:
-        url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/media"
-
-        with open(image_path, "rb") as f:
-            res = requests.post(
-                url,
-                headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
-                files={
-                    "file": ("image.png", f, "image/png"),
-                    "messaging_product": (None, "whatsapp")
-                },
-                timeout=15
-            ).json()
-
-        if "id" not in res:
-            print("Upload Failed:", res)
-            return
-
-        requests.post(
-            f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages",
-            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
-            json={
-                "messaging_product": "whatsapp",
-                "to": to,
-                "type": "image",
-                "image": {"id": res["id"]}
-            },
-            timeout=10
-        )
-
-    except Exception as e:
-        print("Image send error:", e)
-
-# ================== IMAGE ==================
-def generate_image(prompt):
-    try:
-        url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}"
-        res = requests.get(url, timeout=20)
-
-        if res.status_code != 200:
-            return None
-
-        path = f"img_{int(time.time())}.png"
-        with open(path, "wb") as f:
-            f.write(res.content)
-
-        return path
-
-    except Exception as e:
-        print("Image Error:", e)
-        return None
-
-# ================== PROMPT ==================
+# ================== PROMPT ENHANCER ==================
 def enhance_prompt(user_prompt, style=""):
     try:
-        text = f"Enhance this prompt: {user_prompt}, style: {style}, cinematic, detailed"
+        text = f"""
+Enhance this image prompt:
+{user_prompt}
+
+Style: {style}
+
+Make it cinematic, detailed, high quality.
+Return only one improved sentence.
+"""
 
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite-preview",
             contents=[{"text": text}]
         )
 
-        return response.text.strip() if hasattr(response, "text") else user_prompt
+        if hasattr(response, "text") and response.text:
+            return response.text.strip()
 
-    except:
         return user_prompt
 
-# ================== AI ==================
+    except Exception as e:
+        print("Enhancer Error:", e)
+        return user_prompt
+
+# ================== AI CHAT ==================
 def get_ai_reply(sender, user_message):
 
     save_message(sender, "user", user_message)
@@ -197,9 +184,11 @@ def get_ai_reply(sender, user_message):
 
     prompt = f"""
 You are a smart WhatsApp chatbot 🤖
-- Use emojis 😊🔥
+
+Rules:
 - Reply short
-- Support Hindi, English, Hinglish
+- Use emojis 😊🔥
+- Understand Hindi, English, Hinglish
 
 Conversation:
 {history}
@@ -211,10 +200,14 @@ Conversation:
             contents=[{"text": prompt}]
         )
 
-        reply = response.text if hasattr(response, "text") else "⚠️ AI error"
+        if hasattr(response, "text") and response.text:
+            reply = response.text
+        elif hasattr(response, "candidates"):
+            reply = response.candidates[0].content.parts[0].text
+        else:
+            reply = "⚠️ AI error"
 
         save_message(sender, "ai", reply)
-
         return reply
 
     except Exception as e:
@@ -242,7 +235,7 @@ def webhook():
         if "text" in msg:
             text = msg["text"]["body"].lower()
 
-            # STYLE MENU
+            # 🎨 STYLE MENU
             if text == "image":
                 send_whatsapp_message(sender,
                     "🎨 Choose style:\n1 Anime\n2 Realistic\n3 Cartoon\n4 Cyberpunk\n5 Sketch\n6 Fantasy"
@@ -256,22 +249,18 @@ def webhook():
                 return "OK", 200
 
             elif sender in user_style and user_style[sender]:
-                send_whatsapp_message(sender, "🎨 Creating image...")
+                send_whatsapp_message(sender, "🎨 Processing your image...")
 
                 style = user_style[sender]
                 enhanced = enhance_prompt(text, style)
 
-                img = generate_image(f"{enhanced}, {style}")
-
-                if img:
-                    send_whatsapp_image(sender, img)
-                    os.remove(img)
-                else:
-                    send_whatsapp_message(sender, "❌ Failed")
+                # 🔥 ADD TO QUEUE (worker will process)
+                add_task(sender, "image", f"{enhanced}, {style}")
 
                 user_style[sender] = None
                 return "OK", 200
 
+            # 🤖 AI CHAT
             else:
                 reply = get_ai_reply(sender, text)
                 send_whatsapp_message(sender, reply)
@@ -280,6 +269,33 @@ def webhook():
         print("Webhook Error:", e)
 
     return "OK", 200
+
+# ================== ADMIN DASHBOARD ==================
+@app.route("/admin")
+def admin():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT user_id, role, message FROM chat_memory ORDER BY id DESC LIMIT 50")
+    chats = cur.fetchall()
+
+    cur.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 20")
+    tasks = cur.fetchall()
+
+    cur.close()
+    release_conn(conn)
+
+    html = "<h1>Admin Dashboard 🚀</h1>"
+
+    html += "<h2>Chats</h2>"
+    for c in chats:
+        html += f"<p><b>{c[0]}</b> ({c[1]}): {c[2]}</p>"
+
+    html += "<h2>Tasks</h2>"
+    for t in tasks:
+        html += f"<p>{t}</p>"
+
+    return html
 
 # ================== RUN ==================
 if __name__ == "__main__":
