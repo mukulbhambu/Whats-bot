@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 import os
 import urllib.parse
+import base64
 
 from google import genai
 
@@ -43,7 +44,7 @@ def send_whatsapp_message(to, text):
         "text": {"body": text}
     }
 
-    requests.post(url, headers=headers, json=payload, timeout=10)
+    requests.post(url, headers=headers, json=payload)
 
 def send_whatsapp_image(to, image_path):
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/media"
@@ -55,6 +56,7 @@ def send_whatsapp_image(to, image_path):
             "file": ("image.png", f, "image/png"),
             "messaging_product": (None, "whatsapp")
         }
+
         res = requests.post(url, headers=headers, files=files).json()
 
     if "id" not in res:
@@ -82,9 +84,9 @@ def get_greeting():
     return "Good Morning ☀️" if hour < 12 else "Good Afternoon 🌤️" if hour < 18 else "Good Evening 🌙"
 
 def send_welcome_message(to, name):
-    send_whatsapp_message(to, f"{get_greeting()}, {name}! 👋\n\n🤖 AI chatbot ready!")
+    send_whatsapp_message(to, f"{get_greeting()}, {name}! 👋\n🤖 AI chatbot ready!")
 
-# ================== IMAGE UNDERSTANDING ==================
+# ================== IMAGE DOWNLOAD ==================
 def download_image(media_id):
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
     res = requests.get(f"https://graph.facebook.com/v19.0/{media_id}", headers=headers).json()
@@ -100,10 +102,11 @@ def download_image(media_id):
 
     return file_path
 
+# ================== IMAGE ANALYSIS ==================
 def analyze_image(file_path, prompt="Describe this image"):
     try:
         with open(file_path, "rb") as f:
-            image_bytes = f.read()
+            image_bytes = base64.b64encode(f.read()).decode("utf-8")
 
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite-preview",
@@ -111,7 +114,12 @@ def analyze_image(file_path, prompt="Describe this image"):
                 "role": "user",
                 "parts": [
                     {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image_bytes}}
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": image_bytes
+                        }
+                    }
                 ]
             }]
         )
@@ -121,30 +129,21 @@ def analyze_image(file_path, prompt="Describe this image"):
         elif hasattr(response, "candidates"):
             return response.candidates[0].content.parts[0].text
 
-        return "⚠️ Couldn't understand the image."
+        return "⚠️ Couldn't understand image 😢"
 
     except Exception as e:
         print("Image Error:", e)
-        return "⚠️ Couldn't understand the image."
+        return "⚠️ Image analysis failed 😢"
 
 # ================== IMAGE GENERATION ==================
 STYLE_PROMPTS = {
-    "anime": "anime style, vibrant colors, studio ghibli",
-    "realistic": "ultra realistic, 4k, cinematic lighting",
-    "cartoon": "cartoon style, disney pixar style",
-    "cyberpunk": "cyberpunk, neon lights, futuristic city",
-    "sketch": "pencil sketch, black and white",
-    "fantasy": "fantasy art, magical, epic scene",
+    "anime": "anime style, vibrant colors",
+    "realistic": "ultra realistic, 4k",
+    "cartoon": "cartoon style, disney pixar",
+    "cyberpunk": "cyberpunk neon lights",
+    "sketch": "pencil sketch",
+    "fantasy": "fantasy magical scene",
 }
-
-PROMPT_SUGGESTIONS = [
-    "a dragon flying over mountains",
-    "a futuristic city at night",
-    "a cute cat astronaut",
-    "a warrior in battlefield",
-    "a girl standing on beach at sunset",
-    "a cyberpunk hacker with neon lights"
-]
 
 def generate_image(prompt):
     try:
@@ -174,8 +173,8 @@ Enhance this image prompt.
 Prompt: {user_prompt}
 Style: {style}
 
-Make it detailed, cinematic, high quality.
-Return only 1 improved sentence.
+Make it cinematic, detailed, high quality.
+Return only 1 sentence.
 """
 
         response = client.models.generate_content(
@@ -200,33 +199,57 @@ def get_ai_reply(sender, user_message):
     user_memory[sender].append({"role": "user", "content": user_message})
     user_memory[sender] = user_memory[sender][-MAX_HISTORY:]
 
-    history = "\n".join(
-        f"{'User' if m['role']=='user' else 'AI'}: {m['content']}"
-        for m in user_memory[sender]
-    )
+    lang = user_lang.get(sender, "auto")
+
+    history = ""
+    for m in user_memory[sender]:
+        if m["role"] == "user":
+            history += f"User: {m['content']}\n"
+        else:
+            history += f"Assistant: {m['content']}\n"
+
+    prompt = f"""
+You are a friendly WhatsApp chatbot 🤖
+
+RULES:
+- ALWAYS use emojis 😊🔥✨
+- Keep replies short
+- Be human and friendly
+- Language: {lang}
+
+Conversation:
+{history}
+
+Reply to latest message.
+"""
 
     try:
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite-preview",
-            contents=[{"text": history}]
+            contents=[{"text": prompt}]
         )
 
         if hasattr(response, "text") and response.text:
             reply = response.text
+        elif hasattr(response, "candidates"):
+            reply = response.candidates[0].content.parts[0].text
         else:
-            reply = "⚠️ AI error"
+            reply = "⚠️ No response 😢"
+
+        if not any(e in reply for e in "😊🔥✨😂😎"):
+            reply += " 😊"
 
         user_memory[sender].append({"role": "ai", "content": reply})
         return reply
 
-    except:
-        return "⚠️ AI error"
+    except Exception as e:
+        print("AI Error:", e)
+        return "⚠️ AI error 😢"
 
-# ================== WEBHOOK ==================
+# ================== ROUTES ==================
 @app.route("/")
 def home():
     return "Bot is running 🚀", 200
-
 
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -242,10 +265,10 @@ def webhook():
         msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
         sender = msg["from"]
 
+        # ===== TEXT =====
         if "text" in msg:
             text = msg["text"]["body"].lower()
 
-            # STYLE MENU
             if text == "image":
                 send_whatsapp_message(sender,
                     "🎨 Choose style:\n1 Anime\n2 Realistic\n3 Cartoon\n4 Cyberpunk\n5 Sketch\n6 Fantasy"
@@ -258,7 +281,7 @@ def webhook():
                 send_whatsapp_message(sender, "Send your prompt 🎨")
                 return "OK", 200
 
-            elif sender in user_style:
+            elif sender in user_style and user_style[sender]:
                 send_whatsapp_message(sender, "🎨 Creating image...")
 
                 style = STYLE_PROMPTS[user_style[sender]]
@@ -281,10 +304,30 @@ def webhook():
                 reply = get_ai_reply(sender, text)
                 send_whatsapp_message(sender, reply)
 
+        # ===== IMAGE =====
+        elif "image" in msg:
+            media_id = msg["image"]["id"]
+
+            send_whatsapp_message(sender, "📸 Analyzing image...")
+
+            img_path = download_image(media_id)
+
+            if not img_path:
+                send_whatsapp_message(sender, "⚠️ Download failed")
+                return "OK", 200
+
+            caption = msg["image"].get("caption", "Describe this image")
+            reply = analyze_image(img_path, caption)
+
+            send_whatsapp_message(sender, reply)
+
+            os.remove(img_path)
+
     except Exception as e:
         print("Error:", e)
 
     return "OK", 200
 
+# ================== RUN ==================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
