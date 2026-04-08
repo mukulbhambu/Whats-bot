@@ -223,6 +223,11 @@ def get_ai_reply(sender, user_message):
         return "⚠️ AI error"
 
 # ================== WEBHOOK ==================
+@app.route("/")
+def home():
+    return "Bot is running 🚀", 200
+
+
 @app.route("/webhook", methods=["GET"])
 def verify():
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
